@@ -11,32 +11,39 @@ class TokenService {
     this.tokenPath = path.join(__dirname, '../refresh_token.txt');
     this.httpService = HttpService;
     this.tokenCache = {}; // Cache tokens per merchant per request
+    this.inMemoryRefreshTokens = {}; // For serverless environments (Vercel) where file write is not allowed
+    this.isVercel = process.env.VERCEL === '1' || process.env.VERCEL === 'true';
   }
 
   merchantTokenFileExists(merchantId) {
-    const tokenFile = path.join(__dirname, `../refresh_token_${merchantId}.txt`);
-    return fs.existsSync(tokenFile);
+    try {
+      const tokenFile = path.join(__dirname, `../refresh_token_${merchantId}.txt`);
+      return fs.existsSync(tokenFile);
+    } catch {
+      return !!this.inMemoryRefreshTokens[merchantId];
+    }
   }
 
   getRefreshToken(merchantId) {
+    // First check in-memory cache (for serverless/same session)
+    if (this.inMemoryRefreshTokens[merchantId]) {
+      return this.inMemoryRefreshTokens[merchantId];
+    }
+
+    // Then try reading from file
     try {
       const tokenFile = path.join(__dirname, `../refresh_token_${merchantId}.txt`);
-      
       try {
-        return fs.readFileSync(tokenFile, 'utf8').trim();
+        const token = fs.readFileSync(tokenFile, 'utf8').trim();
+        if (token) return token;
       } catch (e) {
-        console.log(`No token file found for merchant ${merchantId}, trying default`);
-        try {
-          return fs.readFileSync(this.tokenPath, 'utf8').trim();
-        } catch (e2) {
-          console.log('No default token file found either');
-          return null;
-        }
+        // File read failed
       }
     } catch (error) {
-      console.error('Error reading refresh token:', error);
-      throw error;
+      // Ignore file errors
     }
+
+    return null;
   }
 
   getRefreshTokenFromAPI(merchantData) {
@@ -44,12 +51,17 @@ class TokenService {
   }
 
   saveRefreshToken(token, merchantId) {
-    try {
-      const tokenFile = path.join(__dirname, `../refresh_token_${merchantId}.txt`);
-      fs.writeFileSync(tokenFile, token);
-    } catch (error) {
-      console.error('Error saving refresh token:', error);
-      throw error;
+    // Always save in memory (works everywhere)
+    this.inMemoryRefreshTokens[merchantId] = token;
+    
+    // Try to save to file (will fail on Vercel but we handle it gracefully)
+    if (!this.isVercel) {
+      try {
+        const tokenFile = path.join(__dirname, `../refresh_token_${merchantId}.txt`);
+        fs.writeFileSync(tokenFile, token);
+      } catch (error) {
+        console.log('Note: Could not write token file (read-only filesystem). Using in-memory cache.');
+      }
     }
   }
 
@@ -63,6 +75,11 @@ class TokenService {
     }
 
     const refreshToken = this.getRefreshToken(merchantId);
+    
+    if (!refreshToken) {
+      throw new Error(`No refresh token available for merchant: ${merchantId}`);
+    }
+
     const authString = Buffer.from(`${merchantConfig.xeroClientId}:${merchantConfig.xeroClientSecret}`).toString('base64');
     
     const headers = {
@@ -75,20 +92,20 @@ class TokenService {
     try {
       const response = await this.httpService.post(xeroConfig.tokenUrl, data, headers);
       
+      // Save the new refresh token (in memory for Vercel, file + memory for others)
       this.saveRefreshToken(response.refresh_token, merchantId);
-      this.tokenCache[merchantId] = response; // Cache the response
+      this.tokenCache[merchantId] = response;
       return response;
     } catch (error) {
       if (error.response?.data?.error === 'invalid_grant' && retryCount < maxRetries) {
-        console.log(`Token invalid (race condition), retrying... (${retryCount + 1}/${maxRetries})`);
-        delete this.tokenCache[merchantId]; // Clear cache on failure
+        console.log(`Token invalid, retrying... (${retryCount + 1}/${maxRetries})`);
+        delete this.tokenCache[merchantId];
         return this.getNewToken(merchantConfig, retryCount + 1);
       }
       throw error;
     }
   }
 
-  // Clear cache after request is complete (call this at end of each request)
   clearCache(merchantId) {
     delete this.tokenCache[merchantId];
   }
