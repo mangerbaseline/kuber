@@ -9,7 +9,6 @@ import TokenService from '../services/tokenService.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_KUBER_BASE_URL = 'https://kuberfinancial.com.au/api/order/checkout';
 
-// Load static merchant config from JSON file (for testing)
 function getMerchantConfig(merchantId) {
     const configPath = path.join(__dirname, '../static_merchant_config.json');
     const allConfigs = JSON.parse(fs.readFileSync(configPath, 'utf8'));
@@ -71,19 +70,21 @@ class KuberController {
             //     userID: merchantData.userID,
             //     webhookURL: merchantData.webhookURL
             // };
-            // const hasLocalToken = TokenService.merchantTokenFileExists(merchantConfig.merchantID);
+            // const hasLocalToken = await TokenService.merchantTokenExists(merchantConfig.merchantID);
             // if (!hasLocalToken && merchantData.refreshToken) {
-            //     TokenService.saveRefreshToken(merchantData.refreshToken, merchantConfig.merchantID);
-            // } else if (!hasLocalToken && !merchantData.refreshToken) {
-            //     return res.status(400).json({
-            //         error: "Token required",
-            //         details: `No refresh token available for merchant: ${merchantId}`
-            //     });
+            //     await TokenService.saveRefreshToken(merchantData.refreshToken, merchantConfig.merchantID);
             // }
 
             // Using static config from JSON file
             const merchantConfig = getMerchantConfig(merchantId);
             console.log("Using static config for merchant:", merchantId, "xeroTenantId:", merchantConfig.xeroTenantId);
+
+            // Check if token exists in DB, if not save from static config
+            const hasToken = await TokenService.merchantTokenExists(merchantConfig.merchantID);
+            if (!hasToken) {
+                // Will be generated on first Xero call via getNewToken
+                console.log(`No token in DB yet for ${merchantId}. Will get from Xero refresh.`);
+            }
 
             // Generate Kuber token
             const tokenResponse = await KuberModel.generateToken(merchantConfig);
@@ -98,7 +99,7 @@ class KuberController {
             // Fetch invoice from Xero
             const invoice = await XeroModel.getInvoice(invoiceNo, merchantConfig);
 
-            // Build checkout payload from Xero invoice data
+            // Build checkout payload
             const checkoutPayload = {
                 menuList: [{
                     itemName: invoice.Invoices[0].LineItems[0].Description,

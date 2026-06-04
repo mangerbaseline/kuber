@@ -8,7 +8,6 @@ import TokenService from '../services/tokenService.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_KUBER_BASE_URL = 'https://kuberfinancial.com.au/api/order/checkout';
 
-// Load static merchant config from JSON file (for testing)
 function getMerchantConfig(merchantId) {
     const configPath = path.join(__dirname, '../static_merchant_config.json');
     const allConfigs = JSON.parse(fs.readFileSync(configPath, 'utf8'));
@@ -38,7 +37,6 @@ class WebhookController {
       const currentDate = new Date().toISOString().split('T')[0];
       const responseData = req.body;
 
-      // Save the response for debugging
       const responsePath = path.join(__dirname, '../response.json');
       fs.writeFileSync(responsePath, JSON.stringify(responseData, null, 2));
 
@@ -48,7 +46,7 @@ class WebhookController {
 
       console.log(`Webhook: Using static config for merchant: ${merchantId}`);
 
-      // COMMENTED: Fetch from Kuber API (for production)
+      // COMMENTED: Fetch merchant config from Kuber API (for production)
       // const apiResponse = await HttpService.post(
       //   'https://www.kuberfinancial.com.au/api/payments/getXeroData',
       //   { merchantID: merchantId }
@@ -68,9 +66,9 @@ class WebhookController {
       //   userID: merchantData.userID,
       //   webhookURL: merchantData.webhookURL
       // };
-      // const hasLocalToken = TokenService.merchantTokenFileExists(merchantConfig.merchantID);
+      // const hasLocalToken = await TokenService.merchantTokenExists(merchantConfig.merchantID);
       // if (!hasLocalToken && merchantData.refreshToken) {
-      //   TokenService.saveRefreshToken(merchantData.refreshToken, merchantConfig.merchantID);
+      //   await TokenService.saveRefreshToken(merchantData.refreshToken, merchantConfig.merchantID);
       // }
 
       // Using static config from JSON file
@@ -80,10 +78,8 @@ class WebhookController {
       if (status === 'Success') {
         const invoice = await XeroModel.getInvoice(invoiceNo, merchantConfig);
 
-        const xeroInvoiceNo = invoice.Invoices[0].InvoiceNumber;
         const xeroInvoiceId = invoice.Invoices[0].InvoiceID;
         const xeroAmount = invoice.Invoices[0].Total;
-        const xeroLineItems = invoice.Invoices[0].LineItems;
 
         const bankAccounts = await XeroModel.getActiveBankAccounts(merchantConfig);
         const bankAccountId = bankAccounts[0].AccountID;

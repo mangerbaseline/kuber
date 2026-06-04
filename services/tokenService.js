@@ -3,6 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import HttpService from './httpService.js';
 import xeroConfig from '../config/xero-config.js';
+import TokenModel from '../models/tokenModel.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -10,38 +11,67 @@ class TokenService {
   constructor() {
     this.tokenPath = path.join(__dirname, '../refresh_token.txt');
     this.httpService = HttpService;
-    this.tokenCache = {}; // Cache tokens per merchant per request
-    this.inMemoryRefreshTokens = {}; // For serverless environments (Vercel) where file write is not allowed
-    this.isVercel = process.env.VERCEL === '1' || process.env.VERCEL === 'true';
+    this.tokenCache = {};
   }
 
-  merchantTokenFileExists(merchantId) {
+  async getRefreshTokenFromDB(merchantId) {
+    try {
+      const tokenDoc = await TokenModel.findOne({ merchantId });
+      return tokenDoc ? tokenDoc.refreshToken : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async saveRefreshTokenToDB(token, merchantId) {
+    try {
+      await TokenModel.findOneAndUpdate(
+        { merchantId },
+        { refreshToken: token, updatedAt: new Date() },
+        { upsert: true }
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async merchantTokenExists(merchantId) {
+    // Check MongoDB first
+    const fromDB = await this.getRefreshTokenFromDB(merchantId);
+    if (fromDB) return true;
+    
+    // Fallback to file
     try {
       const tokenFile = path.join(__dirname, `../refresh_token_${merchantId}.txt`);
       return fs.existsSync(tokenFile);
     } catch {
-      return !!this.inMemoryRefreshTokens[merchantId];
+      return false;
     }
   }
 
-  getRefreshToken(merchantId) {
-    // First check in-memory cache (for serverless/same session)
-    if (this.inMemoryRefreshTokens[merchantId]) {
-      return this.inMemoryRefreshTokens[merchantId];
+  async getRefreshToken(merchantId) {
+    // Check in-memory cache
+    if (this.tokenCache[merchantId]) {
+      return this.tokenCache[merchantId];
     }
 
-    // Then try reading from file
+    // Check MongoDB
+    const fromDB = await this.getRefreshTokenFromDB(merchantId);
+    if (fromDB) {
+      this.tokenCache[merchantId] = fromDB;
+      return fromDB;
+    }
+
+    // Fallback to file
     try {
       const tokenFile = path.join(__dirname, `../refresh_token_${merchantId}.txt`);
-      try {
-        const token = fs.readFileSync(tokenFile, 'utf8').trim();
-        if (token) return token;
-      } catch (e) {
-        // File read failed
+      const fromFile = fs.readFileSync(tokenFile, 'utf8').trim();
+      if (fromFile) {
+        this.tokenCache[merchantId] = fromFile;
+        return fromFile;
       }
-    } catch (error) {
-      // Ignore file errors
-    }
+    } catch (e) {}
 
     return null;
   }
@@ -50,31 +80,27 @@ class TokenService {
     return merchantData.refreshToken || null;
   }
 
-  saveRefreshToken(token, merchantId) {
-    // Always save in memory (works everywhere)
-    this.inMemoryRefreshTokens[merchantId] = token;
+  async saveRefreshToken(token, merchantId) {
+    // Save to MongoDB
+    await this.saveRefreshTokenToDB(token, merchantId);
     
-    // Try to save to file (will fail on Vercel but we handle it gracefully)
-    if (!this.isVercel) {
-      try {
-        const tokenFile = path.join(__dirname, `../refresh_token_${merchantId}.txt`);
-        fs.writeFileSync(tokenFile, token);
-      } catch (error) {
-        console.log('Note: Could not write token file (read-only filesystem). Using in-memory cache.');
-      }
+    // Update in-memory cache
+    this.tokenCache[merchantId] = token;
+    
+    // Try saving to file as fallback (will fail on Vercel but that's OK)
+    try {
+      const tokenFile = path.join(__dirname, `../refresh_token_${merchantId}.txt`);
+      fs.writeFileSync(tokenFile, token);
+    } catch (error) {
+      // Ignore file errors on serverless
     }
   }
 
   async getNewToken(merchantConfig, retryCount = 0) {
-    const maxRetries = 3;
+    const maxRetries = 2;
     const merchantId = merchantConfig.merchantID;
 
-    // Return cached token if available (prevents multiple Xero calls in same request)
-    if (this.tokenCache[merchantId]) {
-      return this.tokenCache[merchantId];
-    }
-
-    const refreshToken = this.getRefreshToken(merchantId);
+    const refreshToken = await this.getRefreshToken(merchantId);
     
     if (!refreshToken) {
       throw new Error(`No refresh token available for merchant: ${merchantId}`);
@@ -92,13 +118,12 @@ class TokenService {
     try {
       const response = await this.httpService.post(xeroConfig.tokenUrl, data, headers);
       
-      // Save the new refresh token (in memory for Vercel, file + memory for others)
-      this.saveRefreshToken(response.refresh_token, merchantId);
-      this.tokenCache[merchantId] = response;
+      // Save the new refresh token to MongoDB + cache
+      await this.saveRefreshToken(response.refresh_token, merchantId);
       return response;
     } catch (error) {
       if (error.response?.data?.error === 'invalid_grant' && retryCount < maxRetries) {
-        console.log(`Token invalid, retrying... (${retryCount + 1}/${maxRetries})`);
+        // Clear cache so next retry fetches fresh from DB
         delete this.tokenCache[merchantId];
         return this.getNewToken(merchantConfig, retryCount + 1);
       }

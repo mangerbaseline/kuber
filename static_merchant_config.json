@@ -29,7 +29,7 @@
         "xeroTenantId": "36f8ccde-4507-4bbd-aa31-230832b22ffd",
         "baseUrl": "https://kuberfinancial.com.au/api/order/checkout",
         "paymentUrl": "",
-        "userID": "merchant_003",
+        "userID": "merchant_002",
         "webhookURL": ""
     }
 }

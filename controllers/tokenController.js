@@ -7,11 +7,11 @@ import HttpService from '../services/httpService.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_KUBER_BASE_URL = 'https://kuberfinancial.com.au/api/order/checkout';
 
-// Load static merchant config from JSON file (for testing)
 function getMerchantConfig(merchantId) {
     const configPath = path.join(__dirname, '../static_merchant_config.json');
     const allConfigs = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    const config = allConfigs[merchantId];   
+    const config = allConfigs[merchantId];
+    
     if (!config) {
         throw new Error(`No configuration found for merchant: ${merchantId}`);
     }
@@ -35,7 +35,7 @@ class TokenController {
     try {
       merchantId = req.query.merchantId || 'default';
 
-      // COMMENTED: Fetch from Kuber API (for production)
+      // COMMENTED: Fetch merchant config from Kuber API (for production)
       // const apiResponse = await HttpService.post(
       //   'https://www.kuberfinancial.com.au/api/payments/getXeroData',
       //   { merchantID: merchantId }
@@ -59,8 +59,9 @@ class TokenController {
       //   webhookURL: merchantData.webhookURL
       // };
       // if (merchantData.refreshToken) {
-      //   TokenService.saveRefreshToken(merchantData.refreshToken, merchantConfig.merchantID);
+      //   await TokenService.saveRefreshToken(merchantData.refreshToken, merchantConfig.merchantID);
       // }
+
       // Using static config from JSON file
       const merchantConfig = getMerchantConfig(merchantId);
       console.log("TokenController: Using static config for merchant:", merchantId);
