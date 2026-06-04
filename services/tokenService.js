@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import mongoose from 'mongoose';
 import HttpService from './httpService.js';
 import xeroConfig from '../config/xero-config.js';
 import TokenModel from '../models/tokenModel.js';
@@ -8,7 +9,7 @@ import TokenModel from '../models/tokenModel.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Initial token for testing (used ONLY if no token exists in DB or file)
-const INITIAL_REFRESH_TOKEN = 'qkMGLc8oV-Gp59eflHRTHl1cG_uketRpUpWLvsm0qiI';
+const INITIAL_REFRESH_TOKEN = 'UeAFB5vngVsVcmeny50WwD2Kah0mA5I2acLpdhvXBFg';
 
 class TokenService {
   constructor() {
@@ -17,9 +18,14 @@ class TokenService {
     this.tokenCache = {};
   }
 
+  isDBConnected() {
+    return mongoose.connection.readyState === 1;
+  }
+
   async getRefreshTokenFromDB(merchantId) {
+    if (!this.isDBConnected()) return null;
     try {
-      const tokenDoc = await TokenModel.findOne({ merchantId });
+      const tokenDoc = await TokenModel.findOne({ merchantId }).maxTimeMS(2000);
       return tokenDoc ? tokenDoc.refreshToken : null;
     } catch {
       return null;
@@ -27,13 +33,13 @@ class TokenService {
   }
 
   async saveRefreshTokenToDB(token, merchantId) {
+    if (!this.isDBConnected()) return false;
     try {
       await TokenModel.findOneAndUpdate(
         { merchantId },
         { refreshToken: token, updatedAt: new Date() },
-        { upsert: true }
+        { upsert: true, maxTimeMS: 2000 }
       );
-      console.log(`Token saved to DB for merchant: ${merchantId}`);
       return true;
     } catch (err) {
       console.error('MongoDB write error:', err.message);
@@ -42,10 +48,12 @@ class TokenService {
   }
 
   async merchantTokenExists(merchantId) {
-    try {
-      const count = await TokenModel.countDocuments({ merchantId });
-      if (count > 0) return true;
-    } catch {}
+    if (this.isDBConnected()) {
+      try {
+        const count = await TokenModel.countDocuments({ merchantId }).maxTimeMS(2000);
+        if (count > 0) return true;
+      } catch {}
+    }
     
     try {
       const tokenFile = path.join(__dirname, `../refresh_token_${merchantId}.txt`);
@@ -56,46 +64,55 @@ class TokenService {
   }
 
   async getRefreshToken(merchantId) {
-    // 1. Check in-memory cache first (within same request)
+    // 1. Check in-memory cache first
     if (this.tokenCache[merchantId]) {
       return this.tokenCache[merchantId];
     }
 
-    // 2. Check MongoDB (has the latest refreshed token)
-    const fromDB = await this.getRefreshTokenFromDB(merchantId);
-    if (fromDB) {
-      this.tokenCache[merchantId] = fromDB;
-      return fromDB;
+    // 2. Check MongoDB (only if connected)
+    if (this.isDBConnected()) {
+      const fromDB = await this.getRefreshTokenFromDB(merchantId);
+      if (fromDB) {
+        this.tokenCache[merchantId] = fromDB;
+        return fromDB;
+      }
     }
 
-    // 3. Fallback to file
+    // 3. Check file
     try {
       const tokenFile = path.join(__dirname, `../refresh_token_${merchantId}.txt`);
       const fromFile = fs.readFileSync(tokenFile, 'utf8').trim();
       if (fromFile) {
-        // Save to DB for future use
-        await this.saveRefreshTokenToDB(fromFile, merchantId);
+        if (this.isDBConnected()) {
+          await this.saveRefreshTokenToDB(fromFile, merchantId);
+        }
         this.tokenCache[merchantId] = fromFile;
         return fromFile;
       }
     } catch (e) {}
 
-    // 4. Last resort: use hardcoded initial token (first run only)
+    // 4. Use hardcoded initial token (first run only)
     console.log(`No token found for ${merchantId}, using hardcoded initial token`);
-    await this.saveRefreshTokenToDB(INITIAL_REFRESH_TOKEN, merchantId);
+    if (this.isDBConnected()) {
+      await this.saveRefreshTokenToDB(INITIAL_REFRESH_TOKEN, merchantId);
+    }
     this.tokenCache[merchantId] = INITIAL_REFRESH_TOKEN;
     return INITIAL_REFRESH_TOKEN;
   }
 
   async saveRefreshToken(token, merchantId) {
-    // Save to MongoDB (always — overwrites old with new)
-    await this.saveRefreshTokenToDB(token, merchantId);
-    // Also save to file for backup
+    // Save to DB only if connected
+    if (this.isDBConnected()) {
+      await this.saveRefreshTokenToDB(token, merchantId);
+    }
+    
+    // Always save to file (fast, always works locally)
     try {
       const tokenFile = path.join(__dirname, `../refresh_token_${merchantId}.txt`);
       fs.writeFileSync(tokenFile, token);
     } catch (error) {}
-    // Update in-memory cache
+    
+    // Update cache
     this.tokenCache[merchantId] = token;
   }
 
@@ -121,7 +138,7 @@ class TokenService {
     try {
       const response = await this.httpService.post(xeroConfig.tokenUrl, data, headers);
       
-      // Save the NEW refresh token to MongoDB (every time Xero returns one)
+      // Save the NEW refresh token to both file and DB
       await this.saveRefreshToken(response.refresh_token, merchantId);
       return response;
     } catch (error) {
