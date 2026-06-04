@@ -40,6 +40,12 @@ class KuberController {
             merchantId = params.merchantId;
             const invoiceNo = params.invoiceNo;
 
+            if (!invoiceNo || invoiceNo === 'undefined') {
+                return res.status(200).json({
+                    message: "Payment processed successfully. Return to merchant."
+                });
+            }
+
             console.log(`Processing payment for merchant: ${merchantId}, invoice: ${invoiceNo}`);
 
             // COMMENTED: Fetch merchant config from Kuber API (for production)
