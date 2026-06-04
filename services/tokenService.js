@@ -9,7 +9,7 @@ import TokenModel from '../models/tokenModel.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Initial token for testing (used ONLY if no token exists in DB or file)
-const INITIAL_REFRESH_TOKEN = 'UeAFB5vngVsVcmeny50WwD2Kah0mA5I2acLpdhvXBFg';
+const INITIAL_REFRESH_TOKEN = 'qkMGLc8oV-Gp59eflHRTHl1cG_uketRpUpWLvsm0qiI';
 
 class TokenService {
   constructor() {
