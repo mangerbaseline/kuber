@@ -3,5 +3,5 @@ dotenv.config();
 
 export default {
   port: process.env.PORT || 4000,
-  kuberApiUrl: process.env.KUBER_API_URL || 'https://www.kuberfinancial.com.au'
+  kuberApiUrl: process.env.KUBER_API_URL 
 };

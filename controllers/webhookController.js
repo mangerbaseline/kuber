@@ -16,16 +16,20 @@ class WebhookController {
       const currentDate = new Date().toISOString().split('T')[0];
       const responseData = req.body;
 
+      console.log(`[handleWebhook] Webhook received - body: ${JSON.stringify(responseData)}`);
+
       const responsePath = path.join(__dirname, '../response.json');
       fs.writeFileSync(responsePath, JSON.stringify(responseData, null, 2));
+      console.log(`[handleWebhook] Webhook payload saved to response.json`);
 
       const invoiceNo = responseData.invoiceNo;
       const status = responseData.status;
       const merchantId = responseData.merchantId || responseData.merchantID || 'default';
 
-      console.log(`Webhook: Processing payment for merchant: ${merchantId}`);
+      console.log(`[handleWebhook] Processing webhook - merchantId: ${merchantId}, invoiceNo: ${invoiceNo}, status: ${status}`);
 
       // Fetch merchant config from Kuber API
+      console.log(`[handleWebhook] Fetching merchant config for merchant: ${merchantId}`);
       const apiResponse = await HttpService.post(
         `${config.kuberApiUrl}/api/payments/getXeroData`,
         { merchantID: merchantId }
@@ -34,6 +38,8 @@ class WebhookController {
       if (!merchantData) {
         throw new Error(`No configuration found for merchant: ${merchantId}`);
       }
+      console.log(`[handleWebhook] Merchant config fetched successfully for merchant: ${merchantId}`);
+
       const merchantConfig = {
         merchantID: merchantData.merchantID,
         postmanToken: merchantData.postmanToken,
@@ -48,13 +54,17 @@ class WebhookController {
       };
 
       if (status === 'Success') {
+        console.log(`[handleWebhook] Payment successful - fetching invoice ${invoiceNo} from Xero`);
         const invoice = await XeroModel.getInvoice(invoiceNo, merchantConfig);
 
         const xeroInvoiceId = invoice.Invoices[0].InvoiceID;
         const xeroAmount = invoice.Invoices[0].Total;
+        console.log(`[handleWebhook] Invoice found - InvoiceID: ${xeroInvoiceId}, Amount: ${xeroAmount}`);
 
+        console.log(`[handleWebhook] Fetching active bank accounts for merchant: ${merchantId}`);
         const bankAccounts = await XeroModel.getActiveBankAccounts(merchantConfig);
         const bankAccountId = bankAccounts[0].AccountID;
+        console.log(`[handleWebhook] Bank account found - AccountID: ${bankAccountId}`);
 
         const paymentPayload = {
           Invoice: {
@@ -68,13 +78,17 @@ class WebhookController {
           Reference: "Paid via API"
         };
 
+        console.log(`[handleWebhook] Creating payment in Xero - InvoiceID: ${xeroInvoiceId}, Amount: ${xeroAmount}`);
         await XeroModel.createPayment(paymentPayload, merchantConfig);
+        console.log(`[handleWebhook] Payment created successfully in Xero`);
 
         res.status(200).json({ message: 'Payment processed successfully' });
       } else {
+        console.log(`[handleWebhook] Payment status: ${status} - not successful, no action taken`);
         res.status(200).json({ message: 'Payment not successful, no action taken' });
       }
     } catch (error) {
+      console.error('[handleWebhook] Error:', error.message);
       res.set('Content-Type', 'application/xml');
       res.status(500).json({ error: error.message });
     }
