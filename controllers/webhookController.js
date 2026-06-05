@@ -4,31 +4,10 @@ import { fileURLToPath } from 'url';
 import XeroModel from '../models/xeroModel.js';
 import HttpService from '../services/httpService.js';
 import TokenService from '../services/tokenService.js';
+import config from '../config/config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_KUBER_BASE_URL = 'https://kuberfinancial.com.au/api/order/checkout';
-
-function getMerchantConfig(merchantId) {
-    const configPath = path.join(__dirname, '../static_merchant_config.json');
-    const allConfigs = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    const config = allConfigs[merchantId];
-    
-    if (!config) {
-        throw new Error(`No configuration found for merchant: ${merchantId}`);
-    }
-    
-    return {
-        merchantID: config.merchantID,
-        postmanToken: config.postmanToken,
-        xeroClientId: config.xeroClientId,
-        xeroClientSecret: config.xeroClientSecret,
-        xeroTenantId: config.xeroTenantId,
-        baseUrl: config.baseUrl || DEFAULT_KUBER_BASE_URL,
-        paymentUrl: config.paymentUrl || "",
-        userID: config.userID || merchantId,
-        webhookURL: config.webhookURL || ""
-    };
-}
 
 class WebhookController {
 
@@ -44,36 +23,29 @@ class WebhookController {
       const status = responseData.status;
       const merchantId = responseData.merchantId || responseData.merchantID || 'default';
 
-      console.log(`Webhook: Using static config for merchant: ${merchantId}`);
+      console.log(`Webhook: Processing payment for merchant: ${merchantId}`);
 
-      // COMMENTED: Fetch merchant config from Kuber API (for production)
-      // const apiResponse = await HttpService.post(
-      //   'https://www.kuberfinancial.com.au/api/payments/getXeroData',
-      //   { merchantID: merchantId }
-      // );
-      // const merchantData = apiResponse.data;
-      // if (!merchantData) {
-      //   throw new Error(`No configuration found for merchant: ${merchantId}`);
-      // }
-      // const merchantConfig = {
-      //   merchantID: merchantData.merchantID,
-      //   postmanToken: merchantData.postmanToken,
-      //   xeroClientId: merchantData.xeroClientId,
-      //   xeroClientSecret: merchantData.xeroClientSecret,
-      //   xeroTenantId: merchantData.xeroTenantId,
-      //   baseUrl: merchantData.baseUrl || DEFAULT_KUBER_BASE_URL,
-      //   paymentUrl: merchantData.paymentUrl,
-      //   userID: merchantData.userID,
-      //   webhookURL: merchantData.webhookURL
-      // };
-      // const hasLocalToken = await TokenService.merchantTokenExists(merchantConfig.merchantID);
-      // if (!hasLocalToken && merchantData.refreshToken) {
-      //   await TokenService.saveRefreshToken(merchantData.refreshToken, merchantConfig.merchantID);
-      // }
-
-      // Using static config from JSON file
-      const merchantConfig = getMerchantConfig(merchantId);
-      console.log("Webhook: Using config for merchant:", merchantId, "tenantId:", merchantConfig.xeroTenantId);
+      // Fetch merchant config from Kuber API
+      const apiResponse = await HttpService.post(
+        `${config.kuberApiUrl}/api/payments/getXeroData`,
+        { merchantID: merchantId }
+      );
+      const merchantData = apiResponse.data;
+      if (!merchantData) {
+        throw new Error(`No configuration found for merchant: ${merchantId}`);
+      }
+      const merchantConfig = {
+        merchantID: merchantData.merchantID,
+        postmanToken: merchantData.postmanToken,
+        xeroClientId: merchantData.xeroClientId,
+        xeroClientSecret: merchantData.xeroClientSecret,
+        xeroTenantId: merchantData.xeroTenantId,
+        baseUrl: merchantData.baseUrl || DEFAULT_KUBER_BASE_URL,
+        paymentUrl: merchantData.paymentUrl,
+        userID: merchantData.userID,
+        webhookURL: merchantData.webhookURL,
+        refreshToken: merchantData.refreshToken
+      };
 
       if (status === 'Success') {
         const invoice = await XeroModel.getInvoice(invoiceNo, merchantConfig);

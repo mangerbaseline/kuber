@@ -61,10 +61,11 @@ class XeroModel {
   }
 
   async createPayment(payload, merchantConfig, existingToken) {
+    const token = existingToken || await this.getAccessToken(merchantConfig);
     const url = `${xeroConfig.apiUrl}/Payments`;
     
     const headers = {
-      'Authorization': `Bearer ${existingToken}`,
+      'Authorization': `Bearer ${token}`,
       'Xero-tenant-id': merchantConfig.xeroTenantId,
       'Content-Type': 'application/json'
     };

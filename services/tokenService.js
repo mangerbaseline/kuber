@@ -1,107 +1,49 @@
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import HttpService from './httpService.js';
 import xeroConfig from '../config/xero-config.js';
-import TokenModel from '../models/tokenModel.js';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+import config from '../config/config.js';
 
 class TokenService {
   constructor() {
-    this.tokenPath = path.join(__dirname, '../refresh_token.txt');
     this.httpService = HttpService;
     this.tokenCache = {};
   }
 
-  async getRefreshTokenFromDB(merchantId) {
-    try {
-      const tokenDoc = await TokenModel.findOne({ merchantId });
-      return tokenDoc ? tokenDoc.refreshToken : null;
-    } catch {
-      return null;
-    }
-  }
-
-  async saveRefreshTokenToDB(token, merchantId) {
-    try {
-      await TokenModel.findOneAndUpdate(
-        { merchantId },
-        { refreshToken: token, updatedAt: new Date() },
-        { upsert: true }
-      );
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  async merchantTokenExists(merchantId) {
-    // Check MongoDB first
-    const fromDB = await this.getRefreshTokenFromDB(merchantId);
-    if (fromDB) return true;
-    
-    // Fallback to file
-    try {
-      const tokenFile = path.join(__dirname, `../refresh_token_${merchantId}.txt`);
-      return fs.existsSync(tokenFile);
-    } catch {
-      return false;
-    }
-  }
-
-  async getRefreshToken(merchantId) {
-    // Check in-memory cache
-    if (this.tokenCache[merchantId]) {
-      return this.tokenCache[merchantId];
-    }
-
-    // Check MongoDB
-    const fromDB = await this.getRefreshTokenFromDB(merchantId);
-    if (fromDB) {
-      this.tokenCache[merchantId] = fromDB;
-      return fromDB;
-    }
-
-    // Fallback to file
-    try {
-      const tokenFile = path.join(__dirname, `../refresh_token_${merchantId}.txt`);
-      const fromFile = fs.readFileSync(tokenFile, 'utf8').trim();
-      if (fromFile) {
-        this.tokenCache[merchantId] = fromFile;
-        return fromFile;
-      }
-    } catch (e) {}
-
-    return null;
-  }
-
-  getRefreshTokenFromAPI(merchantData) {
-    return merchantData.refreshToken || null;
-  }
-
   async saveRefreshToken(token, merchantId) {
-    // Save to MongoDB
-    await this.saveRefreshTokenToDB(token, merchantId);
-    
-    // Update in-memory cache
-    this.tokenCache[merchantId] = token;
-    
-    // Try saving to file as fallback (will fail on Vercel but that's OK)
     try {
-      const tokenFile = path.join(__dirname, `../refresh_token_${merchantId}.txt`);
-      fs.writeFileSync(tokenFile, token);
+      await this.httpService.post(
+        `${config.kuberApiUrl}/api/payments/updateRefreshTokenXero`,
+        { merchantID: merchantId, refreshToken: token }
+      );
+      console.log(`Successfully updated refresh token for merchant ${merchantId} via API`);
     } catch (error) {
-      // Ignore file errors on serverless
+      console.error(`Failed to update refresh token for merchant ${merchantId} via API:`, error.message);
+      throw error;
     }
+    
+    // Update cache
+    this.tokenCache[merchantId] = token;
   }
 
   async getNewToken(merchantConfig, retryCount = 0) {
     const maxRetries = 2;
     const merchantId = merchantConfig.merchantID;
 
-    const refreshToken = await this.getRefreshToken(merchantId);
+    // Use token from cache if available, otherwise from the merchantConfig
+    let refreshToken = this.tokenCache[merchantId] || merchantConfig.refreshToken;
     
+    if (!refreshToken) {
+      // Fallback: fetch from getXeroData API if not present in config
+      try {
+        const apiResponse = await this.httpService.post(
+          `${config.kuberApiUrl}/api/payments/getXeroData`,
+          { merchantID: merchantId }
+        );
+        refreshToken = apiResponse.data?.refreshToken;
+      } catch (err) {
+        console.error(`Failed to fetch refresh token from API for merchant ${merchantId}:`, err.message);
+      }
+    }
+
     if (!refreshToken) {
       throw new Error(`No refresh token available for merchant: ${merchantId}`);
     }
@@ -118,12 +60,11 @@ class TokenService {
     try {
       const response = await this.httpService.post(xeroConfig.tokenUrl, data, headers);
       
-      // Save the new refresh token to MongoDB + cache
+      // Save the NEW refresh token back to the API database
       await this.saveRefreshToken(response.refresh_token, merchantId);
       return response;
     } catch (error) {
       if (error.response?.data?.error === 'invalid_grant' && retryCount < maxRetries) {
-        // Clear cache so next retry fetches fresh from DB
         delete this.tokenCache[merchantId];
         return this.getNewToken(merchantConfig, retryCount + 1);
       }
